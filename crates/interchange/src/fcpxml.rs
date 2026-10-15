@@ -1227,4 +1227,25 @@ mod tests {
         assert_eq!(rate_from_frame_duration("1001/30000s"), Some(FrameRate::FPS_29_97));
         assert_eq!(rate_from_frame_duration("100/2500s"), Some(FrameRate::FPS_25));
     }
+
+    #[test]
+    fn recursive_media_reference_is_a_warning_not_a_stack_overflow() {
+        // `<media id="b">` holds a sequence whose spine references `b` itself. `media()` used
+        // to re-enter itself forever (the `media_items` memo is only filled after the nested
+        // `sequence()` returns); the importer must warn and keep going instead.
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<fcpxml version="1.11">
+<resources>
+<format id="f1" name="FFVideoFormat1080p25" frameDuration="100/2500s" width="1920" height="1080"/>
+<media id="b" name="Loop">
+<sequence format="f1" tcStart="0s"><spine><ref-clip ref="b" offset="0s" start="0s" duration="1s"/></spine></sequence>
+</media>
+</resources>
+<library><event name="E"><project name="P"><sequence format="f1" tcStart="0s"><spine><ref-clip ref="b" offset="0s" start="0s" duration="1s"/></spine></sequence></project></event></library>
+</fcpxml>"#;
+        let mut report = Report::default();
+        let imported = import(xml, &ImportOptions::default(), &mut report).expect("import succeeds");
+        assert!(report.mentions("recursive"), "{report}");
+        assert!(!imported.project.items.is_empty());
+    }
 }
