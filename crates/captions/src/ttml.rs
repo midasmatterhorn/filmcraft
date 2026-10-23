@@ -434,12 +434,13 @@ impl Out {
 }
 
 /// Collect a `<p>`'s (or `<span>`'s) text with `<i>`/`<b>`/`<u>` tags, collapsing whitespace.
-fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, fmt: Fmt, out: &mut Out, depth: usize) {
+fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, fmt: Fmt, out: &mut Out, depth: usize) -> bool {
     // Inline `<span>` (or unknown wrapper) nesting is attacker-controlled too: stop descending
     // rather than overflowing the stack; the cue keeps the text collected so far.
     if depth > MAX_DEPTH {
-        return;
+        return true;
     }
+    let mut truncated = false;
     for c in n.children() {
         if c.is_text() {
             for ch in c.text().unwrap_or("").chars() {
@@ -469,15 +470,16 @@ fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, 
                     for t in &tags {
                         out.s.push_str(&format!("<{t}>"));
                     }
-                    collect(c, styles, f, out, depth + 1);
+                    truncated |= collect(c, styles, f, out, depth + 1);
                     for t in tags.iter().rev() {
                         out.s.push_str(&format!("</{t}>"));
                     }
                 }
-                _ => collect(c, styles, fmt, out, depth + 1),
+                _ => truncated |= collect(c, styles, fmt, out, depth + 1),
             }
         }
     }
+    truncated
 }
 
 fn clean(s: &str) -> String {
@@ -565,7 +567,16 @@ fn times(n: roxmltree::Node, parent: Scope, tm: Timing, doc: &mut Document) -> T
 /// importers cap the same class of attacker-controlled recursion at 32 (`depth > 32`).
 const MAX_DEPTH: usize = 32;
 
-fn walk(n: roxmltree::Node, parent: Scope, depth: usize, tm: &Timing, styles: &HashMap<String, Fmt>, speakers: &HashMap<String, String>, fmt: Fmt, doc: &mut Document) {
+fn walk(
+    n: roxmltree::Node,
+    parent: Scope,
+    depth: usize,
+    tm: &Timing,
+    styles: &HashMap<String, Fmt>,
+    speakers: &HashMap<String, String>,
+    fmt: Fmt,
+    doc: &mut Document,
+) {
     for c in n.children().filter(|c| c.is_element()) {
         let f = style_of(c, styles, fmt);
         match c.tag_name().name() {
@@ -597,9 +608,12 @@ fn walk(n: roxmltree::Node, parent: Scope, depth: usize, tm: &Timing, styles: &H
                         for t in &tags {
                             o.s.push_str(&format!("<{t}>"));
                         }
-                        collect(c, styles, f, &mut o, 0);
+                        let truncated = collect(c, styles, f, &mut o, 0);
                         for t in tags.iter().rev() {
                             o.s.push_str(&format!("</{t}>"));
+                        }
+                        if truncated {
+                            doc.warnings.push("inline elements nested too deeply were skipped".into());
                         }
                         let text = clean(&o.s);
                         if e > b && !text.is_empty() {
@@ -614,7 +628,10 @@ fn walk(n: roxmltree::Node, parent: Scope, depth: usize, tm: &Timing, styles: &H
                             let sb = st.begin.unwrap_or(scope.begin);
                             if let (false, Some(se)) = (st.bad, st.end) {
                                 let mut o = Out { s: String::new(), pending: false };
-                                collect(sp, styles, style_of(sp, styles, f), &mut o, 0);
+                                let truncated = collect(sp, styles, style_of(sp, styles, f), &mut o, 0);
+                                if truncated {
+                                    doc.warnings.push("inline elements nested too deeply were skipped".into());
+                                }
                                 let text = clean(&o.s);
                                 if se > sb && !text.is_empty() {
                                     doc.cues.push(Cue {
@@ -812,5 +829,6 @@ mod tests {
         spans.push_str("</p></div></body></tt>");
         let doc = parse(&spans).expect("import survives hostile span nesting");
         assert!(doc.cues.is_empty());
+        assert_eq!(doc.warnings.iter().filter(|w| w.contains("deeply")).count(), 1, "{:#?}", doc.warnings);
     }
 }
