@@ -422,6 +422,7 @@ fn own_fmt(n: roxmltree::Node, f: &mut Fmt) {
 struct Out {
     s: String,
     pending: bool,
+    visible: bool,
 }
 
 impl Out {
@@ -449,6 +450,7 @@ fn collect(n: roxmltree::Node, styles: &std::collections::HashMap<String, Fmt>, 
                 } else {
                     out.flush();
                     out.s.push(ch);
+                    out.visible = true;
                 }
             }
         } else if c.is_element() {
@@ -603,7 +605,7 @@ fn walk(
                 let whole = if has_timing(c) || spans.is_empty() { e } else { None };
                 match whole {
                     Some(e) => {
-                        let mut o = Out { s: String::new(), pending: false };
+                        let mut o = Out { s: String::new(), pending: false, visible: false };
                         let tags: Vec<&str> = [(f.italic, "i"), (f.bold, "b"), (f.underline, "u")].into_iter().filter(|x| x.0).map(|x| x.1).collect();
                         for t in &tags {
                             o.s.push_str(&format!("<{t}>"));
@@ -616,7 +618,7 @@ fn walk(
                             doc.warnings.push("inline elements nested too deeply were skipped".into());
                         }
                         let text = clean(&o.s);
-                        if e > b && !text.is_empty() {
+                        if e > b && o.visible {
                             doc.cues.push(Cue { start: b, end: e, text, speaker: cue_speaker, id, ..Default::default() });
                         }
                     }
@@ -627,13 +629,13 @@ fn walk(
                             let st = times(sp, scope, *tm, doc);
                             let sb = st.begin.unwrap_or(scope.begin);
                             if let (false, Some(se)) = (st.bad, st.end) {
-                                let mut o = Out { s: String::new(), pending: false };
+                                let mut o = Out { s: String::new(), pending: false, visible: false };
                                 let truncated = collect(sp, styles, style_of(sp, styles, f), &mut o, 0);
                                 if truncated {
                                     doc.warnings.push("inline elements nested too deeply were skipped".into());
                                 }
                                 let text = clean(&o.s);
-                                if se > sb && !text.is_empty() {
+                                if se > sb && o.visible {
                                     doc.cues.push(Cue {
                                         start: sb,
                                         end: se,
@@ -830,5 +832,10 @@ mod tests {
         let doc = parse(&spans).expect("import survives hostile span nesting");
         assert!(doc.cues.is_empty());
         assert_eq!(doc.warnings.iter().filter(|w| w.contains("deeply")).count(), 1, "{:#?}", doc.warnings);
+        let styled =
+            spans.replace("<tt xmlns=", "<tt xmlns:tts=\"http://www.w3.org/ns/ttml#styling\" xmlns=").replacen("<span>", "<span tts:fontStyle=\"italic\">", 1);
+        let doc = parse(&styled).expect("styled hostile nesting is bounded");
+        assert!(doc.cues.is_empty(), "formatting tags alone must not create a cue: {:?}", doc.cues);
+        assert_eq!(doc.warnings.iter().filter(|w| w.contains("deeply")).count(), 1);
     }
 }
