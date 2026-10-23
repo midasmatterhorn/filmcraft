@@ -1046,6 +1046,7 @@ impl FilmcraftApp {
         self.playback.anchor_time = now;
         if self.playback.audio_clock {
             // re-aim the audio stream at the new position; its played-frame count restarts there
+            self.playback.audio_seen = (0, now);
             self.start_audio();
         }
     }
@@ -2627,7 +2628,8 @@ mod audio_recovery_tests {
             out.textures_delta.clear();
         };
         run(0.5, &mut app);
-        // an agent moves the playhead through the command path the control channel uses
+        // The command runs between egui passes, so `invoke` sees the previous pass's 0.5 s time.
+        // It moves the playhead through the same command path the control channel uses.
         let r = crate::menus::invoke(&mut app, &ctx, "playhead.set", json!({"seconds": 5.0})).unwrap();
         let want = Tick(r["time"].as_i64().expect("the set time"));
         assert!(want > Tick::from_seconds_f64(4.9), "the playhead moved to the requested second: {want:?}");
@@ -2637,6 +2639,28 @@ mod audio_recovery_tests {
         // the next playback tick continues from the moved playhead
         run(1.0, &mut app);
         assert_eq!(app.session.playhead(), want, "playback did not snap back to the old anchor");
+        app.stop();
+    }
+
+    #[test]
+    fn reanchoring_audio_clock_resets_stall_watchdog() {
+        let mut session = Session::default();
+        session.execute("file.openDemoProject", json!({})).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = FilmcraftApp::new(session);
+        app.audio = Some(Box::new(Device { ready: true, starts: Arc::new(AtomicUsize::new(0)), reading: Some(0) }));
+        app.play(1.0);
+        app.end_preroll(0.0);
+        assert!(app.playback.audio_clock);
+        // A freshly restarted stream reports zero frames until the device consumes its first block.
+        app.playback.audio_seen = (0, 0.0);
+        app.session.set_playhead(Tick::from_seconds_f64(5.0));
+        app.reanchor_playback(10.0);
+
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(10.5), ..Default::default() }, |ui| app.advance_playback(ui.ctx()));
+        output.textures_delta.clear();
+        assert!(app.playback.audio_clock, "a fresh stream must not trip the stall watchdog");
+        assert_eq!(app.session.playhead(), app.playback.anchor_tick, "the audio clock stays at the re-anchored position");
         app.stop();
     }
 
