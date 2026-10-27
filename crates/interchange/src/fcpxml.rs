@@ -1247,5 +1247,12 @@ mod tests {
         let imported = import(xml, &ImportOptions::default(), &mut report).expect("import succeeds");
         assert!(report.mentions("recursive"), "{report}");
         assert!(!imported.project.items.is_empty());
+        // The project's own sequence keeps its clip, and the recursive media's sequence stayed
+        // empty: the self-reference was skipped, not expanded into a nested copy of itself.
+        let top = imported.sequences[0];
+        assert_eq!(imported.project.sequence(top).unwrap().video_tracks[0].items.len(), 1);
+        let loop_item = imported.project.items.values().find(|i| i.name == "Loop").expect("the media item exists");
+        let seq = loop_item.as_sequence().expect("the media item is a sequence");
+        assert!(seq.video_tracks.iter().all(|t| t.items.is_empty()), "{seq:?}");
     }
 }
